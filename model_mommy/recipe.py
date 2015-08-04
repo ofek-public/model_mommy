@@ -30,10 +30,12 @@ class Recipe(object):
         return mapping
 
     def make(self, **attrs):
-        return mommy.make(self.model, **self._mapping(attrs))
+        model = attrs.pop('model', self.model)
+        return mommy.make(model, **self._mapping(attrs))
 
     def prepare(self, **attrs):
-        return mommy.prepare(self.model, **self._mapping(attrs))
+        model = attrs.pop('model', self.model)
+        return mommy.prepare(model, **self._mapping(attrs))
 
 
 class RecipeForeignKey(object):

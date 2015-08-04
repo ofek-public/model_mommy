@@ -15,6 +15,8 @@ from django.db.models import (\
     BooleanField, DecimalField, FloatField,
     FileField, ImageField, Field,
     ForeignKey, ManyToManyField, OneToOneField)
+    
+from google.appengine.ext import db 
 
 try:
     from django.db.models import BigIntegerField
@@ -25,7 +27,7 @@ from . import generators
 from .exceptions import ModelNotFound, AmbiguousModelName, InvalidQuantityException
 
 from six import string_types
-
+import pprint
 
 class Sequence(object):
 
@@ -35,8 +37,6 @@ class Sequence(object):
         self.increment_by = increment_by
 
     def get_inc(self, model):
-        if not model.objects.count():
-            self.counter = self.increment_by
         i = self.counter
         self.counter += self.increment_by
         return i
@@ -141,6 +141,13 @@ default_mapping = {
     ImageField: generators.gen_image_field,
 
     ContentType: generators.gen_content_type,
+    
+    # appengine
+    db.StringProperty: generators.gen_string_gae,
+    db.IntegerProperty: generators.gen_integer,
+    db.FloatProperty: generators.gen_float,
+    db.BooleanProperty: generators.gen_boolean,
+    db.DateTimeProperty: generators.gen_datetime,
 }
 
 
@@ -211,6 +218,7 @@ class ModelFinder(object):
 class Mommy(object):
     attr_mapping = {}
     type_mapping = None
+    is_gae_model = False
 
     # Note: we're using one finder for all Mommy instances to avoid
     # rebuilding the model cache for every make_* or prepare_* call.
@@ -222,6 +230,9 @@ class Mommy(object):
 
         if isinstance(model, ModelBase):
             self.model = model
+        elif issubclass(model, db.Model):
+            self.model = model
+            self.is_gae_model = True
         else:
             self.model = self.finder.get_model(model)
 
@@ -247,15 +258,19 @@ class Mommy(object):
         return self._make(commit=False, **attrs)
 
     def get_fields(self):
+        if self.is_gae_model:
+            return self.model.properties().values()
         return self.model._meta.fields + self.model._meta.many_to_many
-
+        
     def _make(self, commit=True, **attrs):
         is_rel_field = lambda x: '__' in x
-        model_attrs = dict((k, v) for k, v in attrs.items() if not is_rel_field(k))
+        fields = self.get_fields()
+        field_names = set(field.name for field in fields)
+        model_attrs = dict((k, v) for k, v in attrs.items() if not is_rel_field(k) and k in field_names)
         self.rel_attrs = dict((k, v) for k, v in attrs.items() if is_rel_field(k))
         self.rel_fields = [x.split('__')[0] for x in self.rel_attrs.keys() if is_rel_field(x)]
-
-        for field in self.get_fields():
+		
+        for field in fields:
 
             # Skip links to parent so parent is not created twice.
             if isinstance(field, OneToOneField) and field.rel.parent_link:
@@ -265,10 +280,17 @@ class Mommy(object):
 
             if isinstance(field, (AutoField, generic.GenericRelation)):
                 continue
+                
+            if self.is_gae_model and (getattr(field, 'auto_now', False) or getattr(field, 'auto_now_add', False)):
+                continue
 
             if all([field.name not in model_attrs, field.name not in self.rel_fields, field.name not in self.attr_mapping]):
-                if not issubclass(field.__class__, Field) or field.has_default() or field.blank:
-                    continue
+                if self.is_gae_model:
+                    if (not issubclass(field.__class__, db.Property)) or (field.default is not None) or (not field.required):
+                        continue
+                else:
+                    if not issubclass(field.__class__, Field) or field.has_default() or field.blank:
+                        continue
 
             if isinstance(field, ManyToManyField):
                 if field.name not in model_attrs:
@@ -276,7 +298,7 @@ class Mommy(object):
                 else:
                     self.m2m_dict[field.name] = model_attrs.pop(field.name)
             elif field_value_not_defined:
-                if field.name not in self.rel_fields and field.null:
+                if field.name not in self.rel_fields and getattr(field, 'null', False):
                     continue
                 else:
                     model_attrs[field.name] = self.generate_value(field)
@@ -285,6 +307,9 @@ class Mommy(object):
             elif callable(model_attrs[field.name]):
                 model_attrs[field.name] = model_attrs[field.name]()
 
+        if isinstance(model_attrs.get('key_name'), Sequence):
+            model_attrs['key_name'] = model_attrs['key_name'].gen(self.model)
+				
         return self.instance(model_attrs, _commit=commit)
 
     def m2m_value(self, field):

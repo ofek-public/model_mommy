@@ -94,6 +94,8 @@ def gen_string(max_length):
     return u''.join(choice(string.ascii_letters) for i in range(max_length))
 gen_string.required = ['max_length']
 
+def gen_string_gae():
+    return u''.join(choice(string.ascii_letters) for i in range(30))
 
 def gen_slug(max_length=50):
     valid_chars = string.ascii_letters + string.digits + '_-'
